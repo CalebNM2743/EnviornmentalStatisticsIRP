@@ -82,6 +82,27 @@ PNFComposition <- PNFPreComposition %>%
   group_by(Ancestry, SiteID, Date, SpeciesSymbol) %>% 
   summarize("Composition(%)" = sum(PreComp)/10)
 
+```
+
+Here I'm going to split columns into allotment and pasture as well as only including the most recent reading at each site and in each pasture (I want to project composition across a whole pasture, if there are multiple compositions per pasture, that will complicate things)
+
+```{r}
+#Create the new columns with the string split functions
+PNFComposition <- PNFComposition %>% 
+  mutate(Allotment = str_split_fixed(Ancestry, " > ", 6) [, 5]) %>% 
+  mutate(Pasture = str_split_fixed(Ancestry, " > ", 6) [, 6])
+
+#Filter out unnecessary sites and events, I want only the most recent reading per pasture.
+PNFComposition <- PNFComposition %>% 
+  group_by(SiteID) %>% 
+  filter(Date == max(Date)) %>% 
+  ungroup()
+
+PNFComposition <- PNFComposition %>% 
+  group_by(Pasture) %>% 
+  filter(Date == max(Date)) %>% 
+  ungroup()
+
 PNFComposition
 ```
 
