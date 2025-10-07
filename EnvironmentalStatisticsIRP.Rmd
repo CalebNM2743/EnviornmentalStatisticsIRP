@@ -1,5 +1,87 @@
 ---
 title: "EnvironmentalStatisticsIRP"
-output: html_document
+output: pdf_document
 ---
+
+### Getting Started
+
+Always have to start with loading in a few libraries I'm sure I'll need
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+```
+
+
+### Getting the Data
+
+Need to read in 2 critical things: my actual data, as well as my shapefiles for PNF. This data is in a very raw state, so it will take quite a bit of modification to get it into my actual database.
+
+First, I'll read in my raw data, clean it, and make it into a single database. This is a lot of data and will require a lot of cleaning to get into a single database.
+
+```{r}
+# Reading in the CSVs. There were multiple files, due to the size of the database being difficult to download the whole forest, so I would have to download by district, and then multiple protocols that had individual tabs in the XLS doc (should all be DWR for the actual composition method). Mismatching names with Chino Valley 2 coming from 3 is intentional, I got data that is too difficult to work with in there so I'm omitting it for now.
+
+RawBradshaw1 <- read_csv("RawData/RawPNFBradshawData.csv")
+RawBradshaw2 <- read_csv("RawData/RawPNFBradshawData2.csv")
+RawChinoValley1 <- read_csv("RawData/RawPNFChinoValleyData.csv")
+RawChinoValley2 <- read_csv("RawData/RawPNFChinoValleyData3.csv")
+RawVerde1 <- read_csv("RawData/RawPNFVerdeData.csv")
+RawVerde2 <- read_csv("RawData/RawPNFVerdeData2.csv")
+
+#From here, I'm going to treat to A) have only the columns I need (site name, location, species, and ranking) and B) rename some columns to something more applicable.
+
+CleanPNF <- function(df) {
+  CleanData <- df %>% 
+    select(Date, Ancestry, SiteID, SpeciesSymbol, SpeciesName, CommonName, SampleNumber, nValue) %>% 
+    rename(Rank = nValue)
+  return(CleanData)
+}
+  
+Bradshaw1Refined <- CleanPNF(RawBradshaw1)
+Bradshaw2Refined <- CleanPNF(RawBradshaw2)
+ChinoValley1Refined <- CleanPNF(RawChinoValley1)
+ChinoValley2Refined <- CleanPNF(RawChinoValley2)
+Verde1Refined <- CleanPNF(RawVerde1)
+Verde2Refined <- CleanPNF(RawVerde2)
+
+
+#Combine the main group into one dataframe
+
+PNFFirst <- Bradshaw1Refined %>% 
+  full_join(Bradshaw2Refined) %>% 
+  full_join(ChinoValley1Refined) %>% 
+  full_join(ChinoValley2Refined) %>% 
+  full_join(Verde1Refined) %>% 
+  full_join(Verde2Refined)
+
+```
+
+That's my first dataframe, so now I'm going to narrow this data down to the point where I can get the composition for each species on each site. To do this, I will count each rank each species got per site (How many times was BOCU ranked 1 on X site in Y event?). This will involve creating a new dataframe, as the per sample data will become irrelevant.
+
+```{r}
+PNFSecond <- PNFFirst %>% 
+  group_by(Ancestry, SiteID, Date, SpeciesSymbol, Rank) %>% 
+  summarize(RankCount = n())
+
+PNFSecond <- PNFSecond %>% 
+  mutate(Rank = case_when(
+    Rank == 1 ~ 7,
+    Rank == 2 ~ 2,
+    Rank == 3 ~ 1,
+    TRUE ~ Rank
+  ))
+
+PNFSecond
+
+PNFPreComposition <- PNFSecond %>% 
+  group_by(Ancestry, SiteID, Date, SpeciesSymbol) %>% 
+  summarize(PreComp = Rank*RankCount)
+
+PNFComposition <- PNFPreComposition %>% 
+  group_by(Ancestry, SiteID, Date, SpeciesSymbol) %>% 
+  summarize("Composition(%)" = sum(PreComp)/10)
+
+PNFComposition
+```
 
