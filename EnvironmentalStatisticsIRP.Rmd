@@ -33,8 +33,10 @@ RawVerde2 <- read_csv("RawData/RawPNFVerdeData2.csv")
 
 CleanPNF <- function(df) {
   CleanData <- df %>% 
-    select(Date, Ancestry, SiteID, SpeciesSymbol, SpeciesName, CommonName, SampleNumber, nValue) %>% 
-    rename(Rank = nValue)
+    select(Date, Ancestry, SiteID, SpeciesSymbol, SpeciesName, CommonName, SampleNumber, nValue, DDLat, DDLong) %>% 
+    rename(Rank = nValue,
+           Lat = DDLat,
+           Lon = DDLong)
   return(CleanData)
 }
   
@@ -61,7 +63,7 @@ That's my first dataframe, so now I'm going to narrow this data down to the poin
 
 ```{r}
 PNFSecond <- PNFFirst %>% 
-  group_by(Ancestry, SiteID, Date, SpeciesSymbol, Rank) %>% 
+  group_by(Ancestry, SiteID, Lat, Lon, Date, SpeciesSymbol, Rank) %>% 
   summarize(RankCount = n())
 
 PNFSecond <- PNFSecond %>% 
@@ -75,11 +77,11 @@ PNFSecond <- PNFSecond %>%
 PNFSecond
 
 PNFPreComposition <- PNFSecond %>% 
-  group_by(Ancestry, SiteID, Date, SpeciesSymbol) %>% 
+  group_by(Ancestry, SiteID, Lon, Lat, Date, SpeciesSymbol) %>% 
   summarize(PreComp = Rank*RankCount)
 
 PNFComposition <- PNFPreComposition %>% 
-  group_by(Ancestry, SiteID, Date, SpeciesSymbol) %>% 
+  group_by(Ancestry, SiteID, Lon, Lat, Date, SpeciesSymbol) %>% 
   summarize("Composition(%)" = sum(PreComp)/10)
 
 ```
@@ -92,7 +94,10 @@ PNFComposition <- PNFComposition %>%
   mutate(Allotment = str_split_fixed(Ancestry, " > ", 6) [, 5]) %>% 
   mutate(Pasture = str_split_fixed(Ancestry, " > ", 6) [, 6])
 
-#Filter out unnecessary sites and events, I want only the most recent reading per pasture.
+#Filter out unnecessary sites and events, I want only the most recent reading per pasture, as well as those that actually have coordinates.
+PNFComposition <- PNFComposition %>% 
+  filter(!is.na(Lon))
+
 PNFComposition <- PNFComposition %>% 
   group_by(SiteID) %>% 
   filter(Date == max(Date)) %>% 
@@ -106,3 +111,64 @@ PNFComposition <- PNFComposition %>%
 PNFComposition
 ```
 
+### Very Important: Choose Your Species
+
+This will be one final modification to the dataframe, where we select what species we want to visualize across the map. I am going to sample blue grama, whose code is BOGR2.
+
+```{r}
+SelectedSpComp <- PNFComposition %>% 
+  group_by(Pasture) %>% 
+  filter(SpeciesSymbol == "BOGR2") %>% 
+  ungroup()
+
+SelectedSpComp
+```
+
+Now I need to enter my shapefiles, which will give me the allotment and pasture boundaries for Prescott National Forest.
+
+```{r}
+library(sf)
+library(ggmap)
+
+AllotmentBoundaries <- st_read("Shapefiles/PNFAllotmentBoundaries.shp")
+AllotmentBoundaries_sf <- st_as_sf(AllotmentBoundaries, coords = c("lon", "lat"))
+AllotmentBoundaries_sf <- st_transform(AllotmentBoundaries_sf, crs = 4326)
+
+PastureBoundaries <- st_read("Shapefiles/PNFPastureBoundaries.shp")
+PastureBoundaries_sf <- st_as_sf(PastureBoundaries, coords = c("lon", "lat"))
+PastureBoundaries_sf <- st_transform(PastureBoundaries_sf, crs = 4326)
+
+plot(AllotmentBoundaries_sf$geometry)
+plot(PastureBoundaries_sf$geometry)
+```
+
+Now I'm going to try and plot the locations of my sites by turning PNFComposition into a sf
+
+```{r}
+SelectedSpComp_sf <- st_as_sf(SelectedSpComp, coords = c("Lon", "Lat"))
+
+plot(PastureBoundaries_sf$geometry)
+plot(SelectedSpComp_sf$geometry, col = "blue", add = T)
+```
+
+Ok now I am going to attempt to make a heat map generating blue grama composition on the maps. First I'm going to make a grid of intersects that will tell the situation what to shade what pastures.
+
+```{r}
+st_crs(SelectedSpComp_sf) <- "+proj=longlat +datum=NAD83 +no_defs +ellps=GRS80 +towgs84=0,0,0"
+st_crs(PastureBoundaries_sf) <- "+proj=longlat +datum=NAD83 +no_defs +ellps=GRS80 +towgs84=0,0,0"
+
+PastureComposition <- st_intersects(PastureBoundaries_sf, SelectedSpComp_sf)
+
+PastureComposition
+
+```
+
+Finally I am going to make my map, I am partial to the viridis color scheme so that is what will be used.
+
+```{r}
+library(viridis)
+PastureBoundaries_sf <- left_join()
+
+```
+
+A composition map that should be able to be modified and show different compositions depending on the SelectedSpComp function, where we select the species we would like to have and put into the function
