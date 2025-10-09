@@ -12,7 +12,6 @@ library(tidyverse)
 library(ggplot2)
 ```
 
-
 ### Getting the Data
 
 Need to read in 2 critical things: my actual data, as well as my shapefiles for PNF. This data is in a very raw state, so it will take quite a bit of modification to get it into my actual database.
@@ -59,12 +58,18 @@ PNFFirst <- Bradshaw1Refined %>%
 
 ```
 
+### Getting Composition
+
 That's my first dataframe, so now I'm going to narrow this data down to the point where I can get the composition for each species on each site. To do this, I will count each rank each species got per site (How many times was BOCU ranked 1 on X site in Y event?). This will involve creating a new dataframe, as the per sample data will become irrelevant.
 
 ```{r}
+#Create a count of how many times each Rank was assigned per species
+
 PNFSecond <- PNFFirst %>% 
   group_by(Ancestry, SiteID, Lat, Lon, Date, SpeciesSymbol, Rank) %>% 
   summarize(RankCount = n())
+
+#Assign true values to the Ranks
 
 PNFSecond <- PNFSecond %>% 
   mutate(Rank = case_when(
@@ -74,34 +79,66 @@ PNFSecond <- PNFSecond %>%
     TRUE ~ Rank
   ))
 
+#Change Date to an actual date data
+
+PNFSecond$Date <- as.POSIXct(PNFSecond$Date, format = "%m/%d/%Y")
+
+#Only select most recent event per site
+
+PNFSecond <- PNFSecond %>% 
+  group_by(Ancestry, SiteID) %>% 
+  slice_max(Date, n = 1) %>% 
+  ungroup()
+
 PNFSecond
+
+#Determine how many frames were read per event (Composition is determined by taking the total value of Rank*RankCount divided by how many frames were read per site. Some sites were read with 100 frames, some were read with 200 which can understandably inflate composition if dividing by 100 instead of 200).
+
+PNFThird <- PNFSecond %>% 
+  group_by(Ancestry, SiteID) %>% 
+  summarize(SiteTotalFrames = sum(RankCount)/3) %>% 
+  ungroup()
+
+PNFThird
+
+#Get the Rank*RankCount value
 
 PNFPreComposition <- PNFSecond %>% 
   group_by(Ancestry, SiteID, Lon, Lat, Date, SpeciesSymbol) %>% 
   summarize(PreComp = Rank*RankCount)
 
-PNFComposition <- PNFPreComposition %>% 
-  group_by(Ancestry, SiteID, Lon, Lat, Date, SpeciesSymbol) %>% 
-  summarize("Composition(%)" = sum(PreComp)/10)
+#Connect PNFThird to PNFPreComposition so that PNFPreComposition has the SiteTotalFrames
 
+PNFPreComposition <- full_join(PNFPreComposition, PNFThird, join_by(Ancestry, SiteID))
+
+PNFPreComposition
+
+#Get actual Composition
+
+PNFComposition <- PNFPreComposition %>% 
+  group_by(Ancestry, SiteID, Lon, Lat, Date, SpeciesSymbol, SiteTotalFrames) %>% 
+  summarize(Composition = sum(PreComp))
+
+PNFComposition$Composition <- 10*PNFComposition$Composition/PNFComposition$SiteTotalFrames
+
+PNFComposition
 ```
 
 Here I'm going to split columns into allotment and pasture as well as only including the most recent reading at each site and in each pasture (I want to project composition across a whole pasture, if there are multiple compositions per pasture, that will complicate things)
 
 ```{r}
 #Create the new columns with the string split functions
+
 PNFComposition <- PNFComposition %>% 
   mutate(Allotment = str_split_fixed(Ancestry, " > ", 6) [, 5]) %>% 
   mutate(Pasture = str_split_fixed(Ancestry, " > ", 6) [, 6])
 
 #Filter out unnecessary sites and events, I want only the most recent reading per pasture, as well as those that actually have coordinates.
+
 PNFComposition <- PNFComposition %>% 
   filter(!is.na(Lon))
 
-PNFComposition <- PNFComposition %>% 
-  group_by(SiteID) %>% 
-  filter(Date == max(Date)) %>% 
-  ungroup()
+#Select only the most recent event per pasture
 
 PNFComposition <- PNFComposition %>% 
   group_by(Pasture) %>% 
@@ -116,58 +153,67 @@ PNFComposition
 This will be one final modification to the dataframe, where we select what species we want to visualize across the map. I am going to sample blue grama, whose code is BOGR2.
 
 ```{r}
+#Create dataframe that only has the target species involved
+
 SelectedSpComp <- PNFComposition %>% 
   group_by(Pasture) %>% 
-  filter(SpeciesSymbol == "BOGR2") %>% 
+  filter(SpeciesSymbol == "BOCU") %>% #Can swap out the species code with any desired species code for a new composition framework
   ungroup()
 
 SelectedSpComp
 ```
 
-Now I need to enter my shapefiles, which will give me the allotment and pasture boundaries for Prescott National Forest.
+### Making the Map
+
+Now I need to enter my shapefiles, which will give me the pasture boundaries for Prescott National Forest.
 
 ```{r}
 library(sf)
 library(ggmap)
 
-AllotmentBoundaries <- st_read("Shapefiles/PNFAllotmentBoundaries.shp")
-AllotmentBoundaries_sf <- st_as_sf(AllotmentBoundaries, coords = c("lon", "lat"))
-AllotmentBoundaries_sf <- st_transform(AllotmentBoundaries_sf, crs = 4326)
-
 PastureBoundaries <- st_read("Shapefiles/PNFPastureBoundaries.shp")
-PastureBoundaries_sf <- st_as_sf(PastureBoundaries, coords = c("lon", "lat"))
-PastureBoundaries_sf <- st_transform(PastureBoundaries_sf, crs = 4326)
-
-plot(AllotmentBoundaries_sf$geometry)
-plot(PastureBoundaries_sf$geometry)
 ```
 
-Now I'm going to try and plot the locations of my sites by turning PNFComposition into a sf
+Finally, I will do some final tweaking to my code and eventually, spit out the map that is needed.
 
 ```{r}
-SelectedSpComp_sf <- st_as_sf(SelectedSpComp, coords = c("Lon", "Lat"))
+#First remove the spaces (not sure this is needed, but spaces in column names can sometimes create headaches)
 
-plot(PastureBoundaries_sf$geometry)
-plot(SelectedSpComp_sf$geometry, col = "blue", add = T)
-```
+SelectedSpComp$Allotment <- gsub(" ", "", SelectedSpComp$Allotment)
 
-Ok now I am going to attempt to make a heat map generating blue grama composition on the maps. First I'm going to make a grid of intersects that will tell the situation what to shade what pastures.
+#Remove the word allotment to match the PastureBoundaries naming convention
 
-```{r}
-st_crs(SelectedSpComp_sf) <- "+proj=longlat +datum=NAD83 +no_defs +ellps=GRS80 +towgs84=0,0,0"
-st_crs(PastureBoundaries_sf) <- "+proj=longlat +datum=NAD83 +no_defs +ellps=GRS80 +towgs84=0,0,0"
+SelectedSpComp$Allotment <- gsub("Allotment", "", SelectedSpComp$Allotment)
 
-PastureComposition <- st_intersects(PastureBoundaries_sf, SelectedSpComp_sf)
+#Do the same process for the pasture column
 
-PastureComposition
+SelectedSpComp$Pasture <- gsub(" ", "", SelectedSpComp$Pasture)
+SelectedSpComp$Pasture <- gsub("Pasture", "", SelectedSpComp$Pasture)
 
-```
+#Combine into single column called AP (allotment_pasture)
 
-Finally I am going to make my map, I am partial to the viridis color scheme so that is what will be used.
+SelectedSpComp$AP <- paste0(SelectedSpComp$Allotment, "_", SelectedSpComp$Pasture)
 
-```{r}
+#Do the same process for PastureBoundaries
+
+PastureBoundaries$UNIT_NAME <- gsub(" ", "", PastureBoundaries$UNIT_NAME)
+PastureBoundaries$SUB_NAME <- gsub(" ", "", PastureBoundaries$SUB_NAME)
+PastureBoundaries$AP <- paste0(PastureBoundaries$UNIT_NAME, "_", PastureBoundaries$SUB_NAME)
+
+#Merge but keep all rows from PastureBoundaries (all.x = T). This created 2 extra rows, so there is likely a naming mismatch somewhere....
+
+MergedDatas <- merge(PastureBoundaries, SelectedSpComp, all.x = T)
+
+#Make spatial
+
+MergedDatas_sf <- st_as_sf(MergedDatas, coords = c("lon", "lat"))
+MergedDatas_sf <- st_transform(MergedDatas_sf, crs = 4326)
+
+#Plot based on composition
+
 library(viridis)
-PastureBoundaries_sf <- left_join()
+plot(MergedDatas_sf["Composition"],
+     pal = viridis)
 
 ```
 
